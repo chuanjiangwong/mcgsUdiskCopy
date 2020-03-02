@@ -5,13 +5,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/cheggaaa/pb/v3"
+	"github.com/chuanjiangwong/pb"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -86,6 +87,16 @@ func (udisk *udisk) copyFile(srcFile string, dstFile string) error {
 	return nil
 }
 
+func (udisk *udisk) NewSubProgress(pool *pb.Pool) {
+	dstDirName := filepath.Join(udisk.mount.mountPoint, udisk.dstDirName)
+
+	tmpl := `{{string . "name" | green}} {{counters . | red}} {{bar . "[" "-" (cycle . ".") "." "]"}} {{percent .}}`
+	udisk.progress = pb.ProgressBarTemplate(tmpl).New(udisk.total)
+	udisk.progress.Set("name", fmt.Sprintf("%d:%s", udisk.index, dstDirName))
+
+	pool.Add(udisk.progress)
+}
+
 func (udisk *udisk) Remove(old string) error {
 	udiskOld := filepath.Join(udisk.mount.mountPoint, old)
 	err := os.RemoveAll(udiskOld)
@@ -102,10 +113,6 @@ func (udisk *udisk) CopyDir(src string) error {
 		log.Println(dstDirName, err)
 		return err
 	}
-
-	tmpl := `{{string . "name" | green}} {{counters . | red}} {{bar . "[" "-" (cycle . ".") "." "]"}} {{percent .}}`
-	udisk.progress = pb.ProgressBarTemplate(tmpl).Start64(int64(udisk.total))
-	udisk.progress.Set("name", fmt.Sprintf("%d:%s", udisk.index, dstDirName))
 
 	if strings.TrimSpace(src) == strings.TrimSpace(dstDirName) {
 		return errors.New("src not invail")
@@ -129,10 +136,10 @@ func (udisk *udisk) CopyDir(src string) error {
 		}
 
 		if err != nil {
-			log.Println(path, err)
+			udisk.progress.SetErr(err)
 		}
 
-		udisk.progress.Add(1)
+		udisk.progress.Increment()
 		return err
 	})
 
@@ -202,14 +209,16 @@ func main() {
 	log.Println("Udisk haved mount numbers: ", len(udisks))
 
 	waiter := sync.WaitGroup{}
+	progress := pb.NewPool()
 
 	for i, udisk := range udisks {
 		waiter.Add(1)
 		udisk := udisk
-		udisk.index = i
+		udisk.index = i + 1
 		udisk.total = fileNumbers
 		udisk.dstDirName = flagDstDirName
 		udisk.srcDirMode = stat.Mode()
+		udisk.NewSubProgress(progress)
 		go func() {
 			udisk.Remove(udisk.dstDirName)
 			udisk.CopyDir(flagSrc)
@@ -217,5 +226,9 @@ func main() {
 		}()
 	}
 
+	if len(udisks) > 0 {
+		progress.Start()
+	}
 	waiter.Wait()
+	time.Sleep(500 * time.Millisecond)
 }
